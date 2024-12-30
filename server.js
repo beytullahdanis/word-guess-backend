@@ -23,9 +23,11 @@ const PORT = process.env.PORT || 3002;
 
 // CORS ayarları
 app.use(cors({
-  origin: CLIENT_URL,
-  methods: ["GET", "POST"],
-  credentials: true
+  origin: ["http://localhost:5173", "https://wordguess0.netlify.app", "https://www.wordguess0.netlify.app", "http://localhost:3002"],
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+  optionsSuccessStatus: 200
 }));
 
 app.use(express.json());
@@ -40,11 +42,16 @@ const server = http.createServer(app);
 // Socket.IO yapılandırması
 const io = new Server(server, {
   cors: {
-    origin: CLIENT_URL,
-    methods: ["GET", "POST"],
+    origin: ["http://localhost:5173", "https://wordguess0.netlify.app", "https://www.wordguess0.netlify.app", "http://localhost:3002"],
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true
   },
-  transports: ['polling', 'websocket']
+  transports: ['websocket', 'polling'],
+  allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  cookie: false
 });
 
 // Oyun durumunu tutacak objeler
