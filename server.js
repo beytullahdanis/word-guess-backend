@@ -44,7 +44,7 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
     credentials: true
   },
-  transports: ['polling', 'websocket']
+  transports: ['websocket']
 });
 
 // Oyun durumunu tutacak objeler
