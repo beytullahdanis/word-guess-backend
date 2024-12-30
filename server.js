@@ -41,7 +41,7 @@ const server = http.createServer(app);
 // Socket.IO yapılandırması
 const io = new Server(server, {
   cors: {
-    origin: [CLIENT_URL, "https://wordguess0.netlify.app"],
+    origin: ["https://wordguess0.netlify.app"],
     methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"]
