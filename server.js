@@ -25,7 +25,8 @@ const PORT = process.env.PORT || 3002;
 app.use(cors({
   origin: [CLIENT_URL, "https://wordguess0.netlify.app"],
   methods: ["GET", "POST"],
-  credentials: true
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 app.use(express.json());
@@ -42,9 +43,11 @@ const io = new Server(server, {
   cors: {
     origin: [CLIENT_URL, "https://wordguess0.netlify.app"],
     methods: ["GET", "POST"],
-    credentials: true
+    credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization"]
   },
-  transports: ['polling', 'websocket']
+  transports: ['polling', 'websocket'],
+  allowEIO3: true
 });
 
 // Oyun durumunu tutacak objeler
