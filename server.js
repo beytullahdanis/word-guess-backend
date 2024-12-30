@@ -23,12 +23,9 @@ const PORT = process.env.PORT || 3002;
 
 // CORS ayarları
 app.use(cors({
-  origin: '*',  // Tüm originlere izin ver
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Origin", "X-Requested-With", "Accept"],
-  credentials: true,
-  optionsSuccessStatus: 200,
-  preflightContinue: false
+  origin: [CLIENT_URL, "https://wordguess0.netlify.app"],
+  methods: ["GET", "POST"],
+  credentials: true
 }));
 
 app.use(express.json());
@@ -38,30 +35,16 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
-// CORS Preflight istekleri için
-app.options('*', cors());
-
 const server = http.createServer(app);
 
 // Socket.IO yapılandırması
 const io = new Server(server, {
   cors: {
-    origin: '*',  // Tüm originlere izin ver
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Origin", "X-Requested-With", "Accept"],
+    origin: [CLIENT_URL, "https://wordguess0.netlify.app"],
+    methods: ["GET", "POST"],
     credentials: true
   },
-  transports: ['polling', 'websocket'],
-  allowEIO3: true,
-  pingTimeout: 60000,
-  pingInterval: 25000,
-  cookie: false,
-  connectTimeout: 45000,
-  forceNew: true,
-  reconnection: true,
-  reconnectionAttempts: 10,
-  reconnectionDelay: 1000,
-  reconnectionDelayMax: 5000
+  transports: ['polling', 'websocket']
 });
 
 // Oyun durumunu tutacak objeler
