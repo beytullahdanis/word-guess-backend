@@ -41,7 +41,7 @@ const server = http.createServer(app);
 // Socket.IO yapılandırması
 const io = new Server(server, {
   cors: {
-    origin: ["https://wordguess0.netlify.app"],
+    origin: [CLIENT_URL, "https://wordguess0.netlify.app"],
     methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"]
@@ -478,6 +478,23 @@ io.on('connection', (socket) => {
           currentTeam: room.currentTeam
         });
       }
+    }
+  });
+
+  // Ses verisi işleme
+  socket.on('audio', (data) => {
+    const room = Object.keys(rooms).find(roomId => 
+      rooms[roomId].team1.some(p => p.id === socket.id) || 
+      rooms[roomId].team2.some(p => p.id === socket.id)
+    );
+
+    if (room && rooms[room]) {
+      // Ses verisini odadaki diğer oyunculara ilet
+      socket.to(room).emit('audio', {
+        audio: data.audio,
+        timestamp: data.timestamp,
+        username: rooms[room].players.find(p => p.id === socket.id)?.username
+      });
     }
   });
 
