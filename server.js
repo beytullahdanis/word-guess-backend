@@ -483,18 +483,32 @@ io.on('connection', (socket) => {
 
   // Ses verisi işleme
   socket.on('audio', (data) => {
+    console.log('Ses verisi alındı:', {
+      timestamp: data.timestamp,
+      type: data.type,
+      dataSize: data.audio.length
+    });
+
     const room = Object.keys(rooms).find(roomId => 
       rooms[roomId].team1.some(p => p.id === socket.id) || 
       rooms[roomId].team2.some(p => p.id === socket.id)
     );
 
     if (room && rooms[room]) {
+      const sender = rooms[room].players.find(p => p.id === socket.id);
+      console.log('Ses verisi gönderen:', sender?.username);
+      
       // Ses verisini odadaki diğer oyunculara ilet
       socket.to(room).emit('audio', {
         audio: data.audio,
         timestamp: data.timestamp,
-        username: rooms[room].players.find(p => p.id === socket.id)?.username
+        type: data.type,
+        username: sender?.username
       });
+      
+      console.log('Ses verisi diğer oyunculara iletildi');
+    } else {
+      console.log('Ses verisi iletilemedi: Oyuncu bir odada değil');
     }
   });
 
