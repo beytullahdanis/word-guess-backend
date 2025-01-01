@@ -253,72 +253,95 @@ io.on('connection', (socket) => {
   console.log('Bir kullanıcı bağlandı:', socket.id);
 
   // Odaya katılma
-  socket.on('joinRoom', ({ roomId, username, currentTeam }) => {
-    console.log('Odaya katılma isteği:', { roomId, username, socketId: socket.id, currentTeam });
-    
-    if (!roomId || !username) {
-      console.error('Geçersiz oda katılım isteği:', { roomId, username });
-      return;
-    }
-    
-    socket.join(roomId);
-    if (!rooms[roomId]) {
-      console.log('Yeni oda oluşturuluyor:', roomId);
-      rooms[roomId] = {
-        players: [],
-        team1: [],
-        team2: [],
-        currentRound: 0,
-        scores: { team1: 0, team2: 0 },
-        currentWord: '',
-        isPlaying: false,
-        lastActivity: Date.now(),
-        usedWords: []
-      };
-    }
-
-    // Eğer oyuncu zaten odada varsa, eski bağlantıyı kaldır
-    const existingPlayerIndex = rooms[roomId].players.findIndex(p => p.username === username);
-    if (existingPlayerIndex !== -1) {
-      console.log('Mevcut oyuncu yeniden bağlanıyor:', username);
-      rooms[roomId].players.splice(existingPlayerIndex, 1);
-      
-      // Eski takım üyeliklerini temizle
-      rooms[roomId].team1 = rooms[roomId].team1.filter(p => p.username !== username);
-      rooms[roomId].team2 = rooms[roomId].team2.filter(p => p.username !== username);
-    }
-
-    // Oyuncuyu odaya ekle
-    const playerInfo = { id: socket.id, username };
-    rooms[roomId].players.push(playerInfo);
-    rooms[roomId].lastActivity = Date.now();
-
-    // Eğer önceki takım bilgisi varsa, o takıma ekle
-    if (currentTeam) {
-      console.log('Oyuncu önceki takımına ekleniyor:', { username, currentTeam });
-      if (currentTeam === 'team1') {
-        rooms[roomId].team1.push(playerInfo);
-      } else if (currentTeam === 'team2') {
-        rooms[roomId].team2.push(playerInfo);
-      }
-    }
-    
-    // Eğer aktif bir oyun varsa, oyun durumunu gönder
-    if (rooms[roomId].isPlaying) {
-      console.log('Aktif oyun durumu gönderiliyor:', rooms[roomId]);
-      socket.emit('gameStarted', {
-        isPlaying: rooms[roomId].isPlaying,
-        currentTeam: rooms[roomId].currentTeam,
-        currentWord: rooms[roomId].currentWord,
-        timeRemaining: rooms[roomId].timeRemaining,
-        scores: rooms[roomId].scores,
-        isPreparation: rooms[roomId].isPreparation,
-        preparationTime: rooms[roomId].preparationTime
+  socket.on('joinRoom', async ({ roomId, username }, callback) => {
+    try {
+      console.log('Odaya katılma isteği başladı:', { 
+        roomId, 
+        username, 
+        socketId: socket.id,
+        currentRooms: Array.from(socket.rooms || [])
       });
+      
+      // Callback kontrolü
+      if (typeof callback !== 'function') {
+        console.error('Callback fonksiyonu eksik');
+        return;
+      }
+
+      // Parametre kontrolü
+      if (!roomId || !username) {
+        console.error('Geçersiz parametreler:', { roomId, username });
+        callback({ message: 'Geçersiz oda katılım isteği' });
+        return;
+      }
+
+      // Önceki odalardan çık
+      const previousRooms = Array.from(socket.rooms || []);
+      console.log('Önceki odalar:', previousRooms);
+      
+      for (const room of previousRooms) {
+        if (room !== socket.id) {
+          await new Promise(resolve => socket.leave(room, resolve));
+          console.log(`${room} odasından çıkıldı`);
+        }
+      }
+      
+      // Yeni odaya katıl
+      await new Promise(resolve => socket.join(roomId, resolve));
+      console.log(`${roomId} odasına katıldı`);
+
+      // Oda yoksa oluştur
+      if (!rooms[roomId]) {
+        console.log('Yeni oda oluşturuluyor:', roomId);
+        rooms[roomId] = {
+          players: [],
+          team1: [],
+          team2: [],
+          currentRound: 0,
+          scores: { team1: 0, team2: 0 },
+          currentWord: '',
+          isPlaying: false,
+          lastActivity: Date.now(),
+          usedWords: []
+        };
+      }
+
+      // Mevcut oyuncuyu kontrol et ve temizle
+      const existingPlayerIndex = rooms[roomId].players.findIndex(p => p.username === username);
+      if (existingPlayerIndex !== -1) {
+        console.log('Mevcut oyuncu temizleniyor:', username);
+        rooms[roomId].players.splice(existingPlayerIndex, 1);
+        rooms[roomId].team1 = rooms[roomId].team1.filter(p => p.username !== username);
+        rooms[roomId].team2 = rooms[roomId].team2.filter(p => p.username !== username);
+      }
+
+      // Yeni oyuncuyu ekle
+      const playerInfo = { id: socket.id, username };
+      rooms[roomId].players.push(playerInfo);
+      rooms[roomId].lastActivity = Date.now();
+
+      console.log('Oyuncu başarıyla eklendi:', {
+        roomId,
+        username,
+        totalPlayers: rooms[roomId].players.length
+      });
+
+      // Diğer oyunculara bildir
+      socket.to(roomId).emit('playerJoined', {
+        username,
+        totalPlayers: rooms[roomId].players.length
+      });
+
+      // Oda güncellemesini gönder
+      io.to(roomId).emit('roomUpdate', rooms[roomId]);
+
+      // Başarılı callback
+      console.log('Odaya katılma işlemi tamamlandı');
+      callback(null);
+    } catch (error) {
+      console.error('Odaya katılma hatası:', error);
+      callback({ message: error.message });
     }
-    
-    console.log('Oda durumu güncellendi:', rooms[roomId]);
-    io.to(roomId).emit('roomUpdate', rooms[roomId]);
   });
 
   // Takım seçme
@@ -481,36 +504,46 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Ses verisi işleme
+  // Ses verisi yönetimi
   socket.on('audio', (data) => {
-    console.log('Ses verisi alındı:', {
-      timestamp: data.timestamp,
-      type: data.type,
-      dataSize: data.audio.length
-    });
-
-    const room = Object.keys(rooms).find(roomId => 
-      rooms[roomId].team1.some(p => p.id === socket.id) || 
-      rooms[roomId].team2.some(p => p.id === socket.id)
-    );
-
-    if (room && rooms[room]) {
-      const sender = rooms[room].players.find(p => p.id === socket.id);
-      console.log('Ses verisi gönderen:', sender?.username);
+    try {
+      const room = Object.keys(socket.rooms).find(room => rooms[room]);
       
-      // Ses verisini odadaki diğer oyunculara ilet
+      if (!room || !rooms[room]) {
+        console.log('Oda bulunamadı veya geçersiz');
+        return;
+      }
+
+      const sender = rooms[room].players.find(p => p.id === socket.id);
+      if (!sender) {
+        console.log('Gönderen oyuncu bulunamadı');
+        return;
+      }
+
+      // Debug için ses bilgilerini logla
+      console.log('Ses verisi alındı:', {
+        room,
+        sender: sender.username,
+        timestamp: data.timestamp,
+        mimeType: data.mimeType
+      });
+
+      // Ses verisini odadaki diğer kullanıcılara ilet
       socket.to(room).emit('audio', {
         audio: data.audio,
+        username: data.username,
         timestamp: data.timestamp,
-        type: data.type,
-        username: sender?.username
+        mimeType: data.mimeType
       });
-      
-      console.log('Ses verisi diğer oyunculara iletildi');
-    } else {
-      console.log('Ses verisi iletilemedi: Oyuncu bir odada değil');
+
+      console.log('Ses verisi iletildi');
+    } catch (error) {
+      console.error('Ses verisi işleme hatası:', error);
     }
   });
+
+  // Eski voice event'ini kaldır
+  socket.off('voice');
 
   // Bağlantı koptuğunda
   socket.on('disconnect', () => {
@@ -537,6 +570,103 @@ io.on('connection', (socket) => {
         }
       }
     });
+  });
+
+  // WebRTC sinyal işleme
+  socket.on('offer', ({ offer, targetUsername, fromUsername }) => {
+    const targetSocket = [...io.sockets.sockets.values()].find(s => 
+      rooms[Object.keys(s.rooms)[0]]?.players.find(p => p.username === targetUsername)
+    );
+    
+    if (targetSocket) {
+      targetSocket.emit('offer', { offer, fromUsername });
+    }
+  });
+
+  socket.on('answer', ({ answer, targetUsername, fromUsername }) => {
+    const targetSocket = [...io.sockets.sockets.values()].find(s => 
+      rooms[Object.keys(s.rooms)[0]]?.players.find(p => p.username === targetUsername)
+    );
+    
+    if (targetSocket) {
+      targetSocket.emit('answer', { answer, fromUsername });
+    }
+  });
+
+  socket.on('ice-candidate', ({ candidate, targetUsername, fromUsername }) => {
+    const targetSocket = [...io.sockets.sockets.values()].find(s => 
+      rooms[Object.keys(s.rooms)[0]]?.players.find(p => p.username === targetUsername)
+    );
+    
+    if (targetSocket) {
+      targetSocket.emit('ice-candidate', { candidate, fromUsername });
+    }
+  });
+
+  socket.on('get-room-users', (roomId, callback) => {
+    try {
+      const currentSocket = socket;
+      console.log('Oda kullanıcıları istendi:', {
+        roomId,
+        socketId: currentSocket.id,
+        allRooms: rooms,
+        requestedRoom: rooms[roomId],
+        currentSocketRooms: Array.from(currentSocket.rooms || [])
+      });
+      
+      // Callback fonksiyonu kontrolü
+      if (typeof callback !== 'function') {
+        console.error('Callback fonksiyonu bulunamadı');
+        return;
+      }
+
+      // Room ID kontrolü
+      if (!roomId) {
+        console.error('Room ID bulunamadı');
+        callback({ message: 'Room ID gerekli' });
+        return;
+      }
+
+      // Odanın varlığını kontrol et
+      const room = rooms[roomId];
+      if (!room) {
+        console.error('Oda bulunamadı:', {
+          roomId,
+          availableRooms: Object.keys(rooms)
+        });
+        callback({ message: 'Oda bulunamadı' });
+        return;
+      }
+
+      // Kullanıcının odada olup olmadığını kontrol et
+      const isUserInRoom = room.players.some(p => p.id === currentSocket.id);
+      if (!isUserInRoom) {
+        console.error('Kullanıcı odada değil:', {
+          socketId: currentSocket.id,
+          roomPlayers: room.players
+        });
+        callback({ message: 'Bu odaya erişim izniniz yok' });
+        return;
+      }
+
+      // Kullanıcı listesini hazırla
+      const usernames = room.players.map(p => p.username);
+      
+      console.log('Kullanıcı listesi gönderiliyor:', {
+        roomId,
+        usernames,
+        totalUsers: usernames.length,
+        currentPlayers: room.players
+      });
+
+      // Callback ile kullanıcı listesini gönder
+      callback(null, usernames);
+    } catch (error) {
+      console.error('get-room-users işlenirken hata:', error);
+      if (typeof callback === 'function') {
+        callback({ message: error.message });
+      }
+    }
   });
 });
 
