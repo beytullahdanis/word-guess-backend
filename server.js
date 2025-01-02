@@ -36,6 +36,21 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
+// Debug endpoint'i ekle
+app.get('/debug/rooms', (req, res) => {
+  console.log('Mevcut odalar:', {
+    roomCount: Object.keys(rooms).length,
+    rooms: Object.entries(rooms).map(([roomId, room]) => ({
+      roomId,
+      playerCount: room.players.length,
+      players: room.players.map(p => ({ id: p.id, username: p.username })),
+      team1: room.team1.map(p => ({ id: p.id, username: p.username })),
+      team2: room.team2.map(p => ({ id: p.id, username: p.username }))
+    }))
+  });
+  res.json({ rooms });
+});
+
 const server = http.createServer(app);
 
 // Socket.IO yapılandırması
@@ -47,7 +62,9 @@ const io = new Server(server, {
     allowedHeaders: ["Content-Type", "Authorization"]
   },
   transports: ['polling', 'websocket'],
-  allowEIO3: true
+  allowEIO3: true,
+  pingTimeout: 60000, // 60 saniye
+  pingInterval: 25000 // 25 saniye
 });
 
 // Oyun durumunu tutacak objeler
@@ -250,54 +267,41 @@ function selectNewWord(room) {
 }
 
 io.on('connection', (socket) => {
-  console.log('Bir kullanıcı bağlandı:', socket.id);
+  console.log('Yeni socket bağlantısı:', {
+    socketId: socket.id,
+    query: socket.handshake.query
+  });
 
   // Odaya katılma
   socket.on('joinRoom', async ({ roomId, username }, callback) => {
     try {
-      console.log('Odaya katılma isteği başladı:', { 
-        roomId, 
-        username, 
-        socketId: socket.id,
-        currentRooms: Array.from(socket.rooms || [])
-      });
+      console.log('Odaya katılma isteği:', { roomId, username, socketId: socket.id });
       
-      // Callback kontrolü
-      if (typeof callback !== 'function') {
-        console.error('Callback fonksiyonu eksik');
+      if (!callback || typeof callback !== 'function') {
+        console.error('Callback fonksiyonu eksik veya geçersiz');
         return;
       }
 
-      // Parametre kontrolü
       if (!roomId || !username) {
-        console.error('Geçersiz parametreler:', { roomId, username });
-        callback({ message: 'Geçersiz oda katılım isteği' });
-        return;
+        throw new Error('Geçersiz oda katılım isteği');
       }
 
       // Önceki odalardan çık
-      const previousRooms = Array.from(socket.rooms || []);
-      console.log('Önceki odalar:', previousRooms);
-      
-      for (const room of previousRooms) {
+      for (const room of [...socket.rooms]) {
         if (room !== socket.id) {
-          await new Promise(resolve => socket.leave(room, resolve));
-          console.log(`${room} odasından çıkıldı`);
+          await socket.leave(room);
         }
       }
       
       // Yeni odaya katıl
-      await new Promise(resolve => socket.join(roomId, resolve));
-      console.log(`${roomId} odasına katıldı`);
+      await socket.join(roomId);
 
       // Oda yoksa oluştur
       if (!rooms[roomId]) {
-        console.log('Yeni oda oluşturuluyor:', roomId);
         rooms[roomId] = {
           players: [],
           team1: [],
           team2: [],
-          currentRound: 0,
           scores: { team1: 0, team2: 0 },
           currentWord: '',
           isPlaying: false,
@@ -306,81 +310,124 @@ io.on('connection', (socket) => {
         };
       }
 
-      // Mevcut oyuncuyu kontrol et ve temizle
-      const existingPlayerIndex = rooms[roomId].players.findIndex(p => p.username === username);
+      const room = rooms[roomId];
+
+      // Mevcut oyuncuyu kontrol et
+      const existingPlayerIndex = room.players.findIndex(p => p.username === username);
       if (existingPlayerIndex !== -1) {
-        console.log('Mevcut oyuncu temizleniyor:', username);
-        rooms[roomId].players.splice(existingPlayerIndex, 1);
-        rooms[roomId].team1 = rooms[roomId].team1.filter(p => p.username !== username);
-        rooms[roomId].team2 = rooms[roomId].team2.filter(p => p.username !== username);
+        // Mevcut oyuncunun socket ID'sini güncelle
+        room.players[existingPlayerIndex].id = socket.id;
+      } else {
+        // Yeni oyuncuyu ekle
+        const playerInfo = { id: socket.id, username };
+        room.players.push(playerInfo);
+        
+        // Diğer oyunculara bildir
+        socket.to(roomId).emit('playerJoined', {
+          username,
+          totalPlayers: room.players.length
+        });
       }
 
-      // Yeni oyuncuyu ekle
-      const playerInfo = { id: socket.id, username };
-      rooms[roomId].players.push(playerInfo);
-      rooms[roomId].lastActivity = Date.now();
-
-      console.log('Oyuncu başarıyla eklendi:', {
-        roomId,
-        username,
-        totalPlayers: rooms[roomId].players.length
-      });
-
-      // Diğer oyunculara bildir
-      socket.to(roomId).emit('playerJoined', {
-        username,
-        totalPlayers: rooms[roomId].players.length
-      });
+      room.lastActivity = Date.now();
 
       // Oda güncellemesini gönder
-      io.to(roomId).emit('roomUpdate', rooms[roomId]);
+      const roomUpdate = {
+        players: room.players,
+        team1: room.team1,
+        team2: room.team2,
+        scores: room.scores,
+        currentWord: room.currentWord,
+        currentTeam: room.currentTeam,
+        isPlaying: room.isPlaying
+      };
 
-      // Başarılı callback
-      console.log('Odaya katılma işlemi tamamlandı');
+      console.log('Oda güncellemesi gönderiliyor:', roomUpdate);
+      io.to(roomId).emit('roomUpdate', roomUpdate);
+
       callback(null);
     } catch (error) {
       console.error('Odaya katılma hatası:', error);
-      callback({ message: error.message });
+      if (callback && typeof callback === 'function') {
+        callback({ message: error.message });
+      }
     }
   });
 
   // Takım seçme
-  socket.on('selectTeam', ({ roomId, team }) => {
-    console.log('Takım seçme isteği:', { roomId, team, socketId: socket.id });
-    
-    if (!roomId || !team) {
-      console.error('Geçersiz takım seçme isteği:', { roomId, team });
-      return;
-    }
-    
-    const room = rooms[roomId];
-    if (!room) {
-      console.error('Oda bulunamadı:', roomId);
-      return;
-    }
+  socket.on('selectTeam', ({ roomId, team }, callback) => {
+    try {
+      console.log('Takım seçme isteği alındı:', { roomId, team, socketId: socket.id });
+      
+      if (!callback || typeof callback !== 'function') {
+        console.error('Callback fonksiyonu eksik veya geçersiz');
+        return;
+      }
 
-    const player = room.players.find(p => p.id === socket.id);
-    if (!player) {
-      console.error('Oyuncu bulunamadı:', socket.id);
-      return;
+      if (!roomId || !team) {
+        throw new Error('Geçersiz takım seçme isteği');
+      }
+      
+      const room = rooms[roomId];
+      if (!room) {
+        throw new Error('Oda bulunamadı');
+      }
+
+      const player = room.players.find(p => p.id === socket.id);
+      if (!player) {
+        throw new Error('Oyuncu bulunamadı');
+      }
+
+      console.log('Mevcut oyuncu:', player);
+      console.log('Mevcut takımlar:', {
+        team1: room.team1,
+        team2: room.team2
+      });
+
+      // Takım dolu mu kontrol et
+      const targetTeam = team === 'team1' ? room.team1 : room.team2;
+      if (targetTeam.length >= 2 && !targetTeam.some(p => p.id === socket.id)) {
+        throw new Error('Seçilen takım dolu (maksimum 2 kişi)');
+      }
+
+      // Önce her iki takımdan da çıkar
+      room.team1 = room.team1.filter(p => p.id !== socket.id);
+      room.team2 = room.team2.filter(p => p.id !== socket.id);
+
+      // Seçilen takıma ekle
+      const playerInfo = { id: socket.id, username: player.username };
+      if (team === 'team1') {
+        room.team1.push(playerInfo);
+      } else if (team === 'team2') {
+        room.team2.push(playerInfo);
+      }
+
+      console.log('Takımlar güncellendi:', {
+        team1: room.team1.map(p => ({ id: p.id, username: p.username })),
+        team2: room.team2.map(p => ({ id: p.id, username: p.username }))
+      });
+
+      // Oda güncellemesini gönder
+      const roomUpdate = {
+        players: room.players,
+        team1: room.team1,
+        team2: room.team2,
+        scores: room.scores,
+        currentWord: room.currentWord,
+        currentTeam: room.currentTeam,
+        isPlaying: room.isPlaying
+      };
+
+      console.log('Oda güncellemesi gönderiliyor:', roomUpdate);
+      io.to(roomId).emit('roomUpdate', roomUpdate);
+
+      callback(null);
+    } catch (error) {
+      console.error('Takım seçme hatası:', error);
+      if (callback && typeof callback === 'function') {
+        callback({ message: error.message });
+      }
     }
-    
-    // Oyuncunun mevcut takımını kontrol et ve çıkar
-    room.team1 = room.team1.filter(p => p.id !== socket.id);
-    room.team2 = room.team2.filter(p => p.id !== socket.id);
-    
-    // Yeni takıma ekle
-    if (team === 'team1') {
-      room.team1.push(player);
-      console.log('Oyuncu Takım 1\'e eklendi:', player);
-    } else if (team === 'team2') {
-      room.team2.push(player);
-      console.log('Oyuncu Takım 2\'ye eklendi:', player);
-    }
-    
-    room.lastActivity = Date.now();
-    console.log('Güncellenmiş oda durumu:', room);
-    io.to(roomId).emit('roomUpdate', room);
   });
 
   // Oyunu başlatma
@@ -505,71 +552,66 @@ io.on('connection', (socket) => {
   });
 
   // Ses verisi yönetimi
-  socket.on('audio', (data) => {
+  socket.on('audio', (data, callback) => {
     try {
-      const room = Object.keys(socket.rooms).find(room => rooms[room]);
-      
-      if (!room || !rooms[room]) {
-        console.log('Oda bulunamadı veya geçersiz');
-        return;
-      }
-
-      const sender = rooms[room].players.find(p => p.id === socket.id);
-      if (!sender) {
-        console.log('Gönderen oyuncu bulunamadı');
-        return;
-      }
-
-      // Debug için ses bilgilerini logla
       console.log('Ses verisi alındı:', {
-        room,
-        sender: sender.username,
-        timestamp: data.timestamp,
-        mimeType: data.mimeType
-      });
-
-      // Ses verisini odadaki diğer kullanıcılara ilet
-      socket.to(room).emit('audio', {
-        audio: data.audio,
         username: data.username,
-        timestamp: data.timestamp,
-        mimeType: data.mimeType
+        roomId: data.roomId,
+        socketId: socket.id
       });
 
-      console.log('Ses verisi iletildi');
+      // Oda kontrolü
+      const room = rooms[data.roomId];
+      if (!room) {
+        console.error('Oda bulunamadı:', data.roomId);
+        if (callback) callback({ error: 'Oda bulunamadı' });
+        return;
+      }
+
+      // Oyuncunun takımını kontrol et
+      let senderTeam = null;
+      if (room.team1.some(p => p.id === socket.id)) {
+        senderTeam = 'team1';
+      } else if (room.team2.some(p => p.id === socket.id)) {
+        senderTeam = 'team2';
+      }
+
+      if (!senderTeam) {
+        console.error('Gönderen oyuncu bir takımda değil:', data.username);
+        if (callback) callback({ error: 'Gönderen oyuncu bir takımda değil' });
+        return;
+      }
+
+      // Ses verisini odadaki diğer takım arkadaşlarına ilet
+      const recipients = room[senderTeam]
+        .filter(p => p.id !== socket.id);
+
+      if (recipients.length > 0) {
+        recipients.forEach(recipient => {
+          socket.to(recipient.id).emit('audio', {
+            audio: data.audio,
+            username: data.username,
+            timestamp: data.timestamp,
+            sampleRate: data.sampleRate,
+            channels: data.channels,
+            format: data.format
+          });
+        });
+
+        console.log('Ses verisi iletildi:', {
+          from: data.username,
+          to: recipients.map(r => r.username).join(', ')
+        });
+        
+        if (callback) callback(null);
+      } else {
+        console.log('İletilecek takım arkadaşı bulunamadı');
+        if (callback) callback({ error: 'İletilecek takım arkadaşı bulunamadı' });
+      }
     } catch (error) {
       console.error('Ses verisi işleme hatası:', error);
+      if (callback) callback({ error: error.message });
     }
-  });
-
-  // Eski voice event'ini kaldır
-  socket.off('voice');
-
-  // Bağlantı koptuğunda
-  socket.on('disconnect', () => {
-    console.log('Kullanıcı ayrıldı:', socket.id);
-    
-    Object.keys(rooms).forEach(roomId => {
-      const room = rooms[roomId];
-      if (room) {
-        room.players = room.players.filter(p => p.id !== socket.id);
-        room.team1 = room.team1.filter(p => p.id !== socket.id);
-        room.team2 = room.team2.filter(p => p.id !== socket.id);
-        
-        // Odada kimse kalmadıysa odayı ve timeri temizle
-        if (room.players.length === 0) {
-          if (room.currentTimer) {
-            clearInterval(room.currentTimer);
-          }
-          console.log('Boş oda siliniyor:', roomId);
-          delete rooms[roomId];
-        } else {
-          room.lastActivity = Date.now();
-          console.log('Oda güncellendi (oyuncu ayrıldı):', room);
-          io.to(roomId).emit('roomUpdate', room);
-        }
-      }
-    });
   });
 
   // WebRTC sinyal işleme
@@ -601,6 +643,29 @@ io.on('connection', (socket) => {
     if (targetSocket) {
       targetSocket.emit('ice-candidate', { candidate, fromUsername });
     }
+  });
+
+  // Bağlantı koptuğunda
+  socket.on('disconnect', () => {
+    console.log('Kullanıcı ayrıldı:', socket.id);
+    
+    Object.keys(rooms).forEach(roomId => {
+      const room = rooms[roomId];
+      if (room) {
+        room.players = room.players.filter(p => p.id !== socket.id);
+        room.team1 = room.team1.filter(p => p.id !== socket.id);
+        room.team2 = room.team2.filter(p => p.id !== socket.id);
+        
+        if (room.players.length === 0) {
+          if (room.currentTimer) {
+            clearInterval(room.currentTimer);
+          }
+          delete rooms[roomId];
+        } else {
+          io.to(roomId).emit('roomUpdate', room);
+        }
+      }
+    });
   });
 
   socket.on('get-room-users', (roomId, callback) => {
@@ -666,6 +731,59 @@ io.on('connection', (socket) => {
       if (typeof callback === 'function') {
         callback({ message: error.message });
       }
+    }
+  });
+
+  // Oda kontrolü
+  socket.on('checkRoom', ({ roomId }, callback) => {
+    try {
+      console.log('Oda kontrolü yapılıyor:', {
+        roomId,
+        socketId: socket.id,
+        availableRooms: Object.keys(rooms)
+      });
+
+      if (!roomId) {
+        throw new Error('RoomId bulunamadı');
+      }
+
+      const room = rooms[roomId];
+      if (!room) {
+        throw new Error('Oda bulunamadı');
+      }
+
+      // Socket'in odaya katılmış olduğunu kontrol et
+      const socketRooms = Array.from(socket.rooms);
+      if (!socketRooms.includes(roomId)) {
+        console.log('Socket odaya katılmamış, katılım yapılıyor...');
+        socket.join(roomId);
+      }
+
+      // Oyuncunun odada olduğunu kontrol et
+      const player = room.players.find(p => p.id === socket.id);
+      if (!player) {
+        console.log('Oyuncu odada bulunamadı, ekleniyor...');
+        const username = room.players.find(p => p.username === socket.handshake.query.username)?.username;
+        if (username) {
+          room.players.push({ id: socket.id, username });
+        }
+      }
+
+      console.log('Oda durumu:', {
+        roomId,
+        players: room.players.map(p => ({ id: p.id, username: p.username })),
+        team1: room.team1.map(p => ({ id: p.id, username: p.username })),
+        team2: room.team2.map(p => ({ id: p.id, username: p.username }))
+      });
+
+      callback(null, {
+        players: room.players,
+        team1: room.team1,
+        team2: room.team2
+      });
+    } catch (error) {
+      console.error('Oda kontrolü hatası:', error);
+      callback({ message: error.message });
     }
   });
 });
